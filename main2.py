@@ -190,6 +190,17 @@ print(f"  THF fraction:         {d_corr*100:.2f}%")
 print(f"  Pearson r:            {r_val_corr:.4f} (p-value={p_val_corr:.4e})")
 print(f"  RMS error:            {rms_val_corr:.4f}")
 
+# also lets do a pearson and rms for the reference and the test spectrum
+r_val_ref, p_val_ref = pearsonr(ref_interp, test_interp)
+rms_val_ref = compute_rms(ref_interp, test_interp)
+
+print("\n[REFERENCE VS TEST SPECTRUM]")
+print(f" 1-hexanol fraction:   100.00%")
+print(f" 2-hexanol fraction:   0.00%")
+print(f" Hexane fraction:      0.00%")
+print(f" THF fraction:         0.00%")
+print(f"  Pearson r:            {r_val_ref:.4f} (p-value={p_val_ref:.4e})")
+print(f"  RMS error:            {rms_val_ref:.4f}")
 
 # ---------------------------------------------------
 # 9) PLOT COMPARISONS
