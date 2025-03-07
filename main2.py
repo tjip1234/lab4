@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.optimize import nnls
+from scipy.optimize import nnls, minimize
 from scipy.stats import pearsonr
 
 # ---------------------------------------------------
@@ -10,7 +10,7 @@ from scipy.stats import pearsonr
 REF_FILE     = "reference.csv"      # 1‑hexanol reference
 TEST_FILE    = "test.csv"           # Test sample
 HEXANE_FILE  = "hexane.csv"         # Hexane
-TWO_HEX_FILE = "2hexanol.csv"       # 2‑hexanol
+TWO_HEX_FILE = "2hexanol-update.csv"# 2‑hexanol
 THF_FILE     = "thf.csv"            # THF (already 0–1, no scaling)
 
 # Load CSVs
@@ -42,21 +42,20 @@ def scale_to_reference(df, ref_min, ref_max):
     ) * (ref_max - ref_min) + ref_min
     return df
 
-ref_min = ref_df["transmittance"].min()  # often ~0
-ref_max = ref_df["transmittance"].max()  # e.g. ~0.91 or so
+ref_min = ref_df["transmittance"].min() 
+ref_max = ref_df["transmittance"].max()
 
 test_df   = scale_to_reference(test_df,   ref_min, ref_max)
 hexane_df = scale_to_reference(hexane_df, ref_min, ref_max)
 two_hex_df= scale_to_reference(two_hex_df,ref_min, ref_max)
-# THF remains unscaled; we assume it's already 0–1
+# THF remains unscaled (already 0–1)
 
 # ---------------------------------------------------
-# 3) DEFINE FULL OVERLAPPING RANGE (e.g., 500–4000 cm⁻¹)
+# 3) DEFINE FULL OVERLAPPING RANGE
 # ---------------------------------------------------
 lower_bound = 500
 upper_bound = 4000
 
-# Find actual overlap among the five DataFrames
 full_min = max(
     ref_df["wavelength"].min(),
     test_df["wavelength"].min(),
@@ -71,27 +70,23 @@ full_max = min(
     two_hex_df["wavelength"].max(),
     thf_df["wavelength"].max()
 )
-
-# Also clamp to the user-defined (500, 4000)
+# Clamp to user-defined range
 full_min = max(full_min, lower_bound)
 full_max = min(full_max, upper_bound)
 
-common_wl = np.linspace(full_min, full_max, 1500)  # 1500 points
+common_wl = np.linspace(full_min, full_max, 1500)
 
 # ---------------------------------------------------
-# 4) INTERPOLATE & MODIFY 2‑HEXANOL ABOVE 2000 cm⁻¹
+# 4) INTERPOLATE
 # ---------------------------------------------------
-ref_interp     = np.interp(common_wl, ref_df["wavelength"],     ref_df["transmittance"])
-test_interp    = np.interp(common_wl, test_df["wavelength"],    test_df["transmittance_scaled"])
-hexane_interp  = np.interp(common_wl, hexane_df["wavelength"],  hexane_df["transmittance_scaled"])
-two_hex_raw    = np.interp(common_wl, two_hex_df["wavelength"], two_hex_df["transmittance_scaled"])
-thf_interp     = np.interp(common_wl, thf_df["wavelength"],     thf_df["transmittance"])
-
-# Replace 2‑hex data above 2000 with reference (1‑hexanol)
-two_hex_modified = np.where(common_wl > 2000, ref_interp, two_hex_raw)
+ref_interp         = np.interp(common_wl, ref_df["wavelength"],     ref_df["transmittance"])
+test_interp        = np.interp(common_wl, test_df["wavelength"],    test_df["transmittance_scaled"])
+hexane_interp      = np.interp(common_wl, hexane_df["wavelength"],  hexane_df["transmittance_scaled"])
+two_hex_modified   = np.interp(common_wl, two_hex_df["wavelength"], two_hex_df["transmittance_scaled"])
+thf_interp         = np.interp(common_wl, thf_df["wavelength"],     thf_df["transmittance"])
 
 # ---------------------------------------------------
-# 5) BUILD DESIGN MATRIX FOR SINGLE-PASS NNLS
+# 5) BUILD DESIGN MATRIX
 #    ORDER: [1-hexanol, 2-hexanol_modified, hexane, THF]
 # ---------------------------------------------------
 X = np.column_stack([
@@ -103,52 +98,174 @@ X = np.column_stack([
 Y = test_interp
 
 # ---------------------------------------------------
-# 6) RUN NONNEGATIVE LEAST SQUARES => 4 Fractions
+# 6) SINGLE-PASS NNLS => 4 Fractions
 # ---------------------------------------------------
-coeffs, rnorm = nnls(X, Y)  # ensures all >= 0
+coeffs_nnls, rnorm = nnls(X, Y)  # ensures all coefficients >= 0
 
 # Normalize so sum=1
-sum_coeff = np.sum(coeffs)
-if sum_coeff > 0:
-    coeffs /= sum_coeff
+sum_nnls = np.sum(coeffs_nnls)
+if sum_nnls > 0:
+    coeffs_nnls /= sum_nnls
 
-a = coeffs[0]  # 1-hexanol fraction
-b = coeffs[1]  # 2-hexanol fraction
-c = coeffs[2]  # hexane fraction
-d = coeffs[3]  # THF fraction
+a_nnls = coeffs_nnls[0]
+b_nnls = coeffs_nnls[1]
+c_nnls = coeffs_nnls[2]
+d_nnls = coeffs_nnls[3]
 
 # ---------------------------------------------------
-# 7) RECONSTRUCT & EVALUATE
+# 7) RECONSTRUCTION (NNLS) & EVALUATION
 # ---------------------------------------------------
-recon = a*ref_interp + b*two_hex_modified + c*hexane_interp + d*thf_interp
+recon_nnls = a_nnls*ref_interp + b_nnls*two_hex_modified + c_nnls*hexane_interp + d_nnls*thf_interp
 
-# Pearson correlation & RMS
 def compute_rms(u, v):
     return np.sqrt(np.mean((u - v)**2))
 
-r_val, p_val = pearsonr(Y, recon)
-rms_val = compute_rms(Y, recon)
+r_val_nnls, p_val_nnls = pearsonr(Y, recon_nnls)
+rms_val_nnls = compute_rms(Y, recon_nnls)
 
 print("\n[SINGLE-PASS NNLS: 4 COMPONENTS]")
-print(f"  1-hexanol fraction:   {a*100:.2f}%")
-print(f"  2-hexanol fraction:   {b*100:.2f}%")
-print(f"  Hexane fraction:      {c*100:.2f}%")
-print(f"  THF fraction:         {d*100:.2f}%")
-print(f"  Pearson r:            {r_val:.4f} (p-value={p_val:.4e})")
-print(f"  RMS error:            {rms_val:.4f}")
+print(f"  1-hexanol fraction:   {a_nnls*100:.2f}%")
+print(f"  2-hexanol fraction:   {b_nnls*100:.2f}%")
+print(f"  Hexane fraction:      {c_nnls*100:.2f}%")
+print(f"  THF fraction:         {d_nnls*100:.2f}%")
+print(f"  Pearson r:            {r_val_nnls:.4f} (p-value={p_val_nnls:.4e})")
+print(f"  RMS error:            {rms_val_nnls:.4f}")
+
 
 # ---------------------------------------------------
-# 8) PLOT FINAL
+# 8) OPTIMIZE FOR PEARSON CORRELATION
+#    - We maximize r => minimize -r
+#    - Nonnegative & sum=1 constraints
 # ---------------------------------------------------
-plt.figure(figsize=(12,8))
+def negative_pearson(coeffs, X, Y):
+    # Reconstruct
+    recon = np.dot(X, coeffs)
+    # If all zeros or something degenerate, handle safely
+    if np.all(recon == 0):
+        return 1.0  # correlation = 0 => negative is 0 => cost is 1 is arbitrary
+    r, _ = pearsonr(Y, recon)
+    return -r  # minimize negative => maximize r
+
+# Constraints: sum(coeffs) = 1
+constraints = {'type': 'eq', 'fun': lambda c: np.sum(c) - 1}
+# Bounds: all >= 0
+bounds = [(0, None)] * X.shape[1]
+
+# Start guess: uniform
+x0 = np.ones(X.shape[1]) / X.shape[1]
+
+result = minimize(
+    fun=negative_pearson,
+    x0=x0,
+    args=(X, Y),
+    method='SLSQP',
+    bounds=bounds,
+    constraints=constraints
+)
+
+coeffs_corr = result.x
+
+# Ensure no negative from numerical slips
+coeffs_corr[coeffs_corr < 0] = 0.0
+# Renormalize if needed
+s = coeffs_corr.sum()
+if s > 0:
+    coeffs_corr /= s
+
+a_corr = coeffs_corr[0]
+b_corr = coeffs_corr[1]
+c_corr = coeffs_corr[2]
+d_corr = coeffs_corr[3]
+
+# Reconstruct & evaluate
+recon_corr = a_corr*ref_interp + b_corr*two_hex_modified + c_corr*hexane_interp + d_corr*thf_interp
+r_val_corr, p_val_corr = pearsonr(Y, recon_corr)
+rms_val_corr = compute_rms(Y, recon_corr)
+
+print("\n[PEARSON-CORRELATION OPTIMIZATION: 4 COMPONENTS]")
+print(f"  1-hexanol fraction:   {a_corr*100:.2f}%")
+print(f"  2-hexanol fraction:   {b_corr*100:.2f}%")
+print(f"  Hexane fraction:      {c_corr*100:.2f}%")
+print(f"  THF fraction:         {d_corr*100:.2f}%")
+print(f"  Pearson r:            {r_val_corr:.4f} (p-value={p_val_corr:.4e})")
+print(f"  RMS error:            {rms_val_corr:.4f}")
+
+
+# ---------------------------------------------------
+# 9) PLOT COMPARISONS
+# ---------------------------------------------------
+# -- (A) NNLS Fit --
+plt.figure(figsize=(10,6))
 plt.plot(common_wl, Y, label="Test Spectrum", color="red", linewidth=2)
-plt.plot(common_wl, recon, label="Reconstructed", color="black", linestyle="--", linewidth=2)
+plt.plot(common_wl, recon_nnls, label="Reconstructed (NNLS)", color="black", linestyle="--", linewidth=2)
 plt.plot(common_wl, ref_interp, label="1-hexanol (Reference)", color="blue", linestyle="-.", linewidth=1)
 plt.xlabel("Wavenumber (cm⁻¹)")
 plt.ylabel("Transmittance")
-plt.title(f"Single-Pass NNLS Fit 1-hexanol: {a*100:.2f}%, 2-hexanol: {b*100:.2f}%, Hexane: {c*100:.2f}%, THF: {d*100:.2f}%")
+plt.title(f"NNLS Fit\n1-hex: {a_nnls*100:.2f}%, 2-hex: {b_nnls*100:.2f}%, Hexane: {c_nnls*100:.2f}%, THF: {d_nnls*100:.2f}%")
 plt.gca().invert_xaxis()  # IR convention
 plt.legend()
 plt.tight_layout()
-plt.savefig("final_single_pass_4component.png")
+plt.savefig("nnls_fit.png")
+plt.show()
+
+# -- (B) Pearson-corr Fit --
+plt.figure(figsize=(10,6))
+plt.plot(common_wl, Y, label="Test Spectrum", linewidth=2)
+plt.plot(common_wl, recon_corr, label="Reconstructed (Max Corr)", linestyle="--", linewidth=2)
+plt.plot(common_wl, ref_interp, label="1-hexanol (Reference)", linestyle="-.", linewidth=1)
+plt.xlabel("Wavenumber (cm⁻¹)")
+plt.ylabel("Transmittance")
+plt.title(f"Correlation-Optimized Fit\n1-hex: {a_corr*100:.2f}%, 2-hex: {b_corr*100:.2f}%, Hexane: {c_corr*100:.2f}%, THF: {d_corr*100:.2f}%")
+plt.gca().invert_xaxis()
+plt.legend()
+plt.tight_layout()
+plt.savefig("corr_fit.png")
+plt.show()
+
+
+# ---------------------------------------------------
+# 10) SHOW ALL SCALED SPECTRA IN A GRID
+#     We'll just illustrate them individually.
+# ---------------------------------------------------
+fig, axes = plt.subplots(2, 3, figsize=(12, 8))
+
+# Because you have 5 key dataframes, you can fill 5 subplots; 
+# the 6th subplot will be empty or you can use it for something else.
+# For each, we'll plot "transmittance_scaled" if it exists, else "transmittance".
+
+# (1) Reference
+axes[0,0].plot(ref_df["wavelength"], ref_df["transmittance"])
+axes[0,0].invert_xaxis()
+axes[0,0].set_title("1‑Hexanol (Reference)")
+
+# (2) Test (scaled)
+axes[0,1].plot(test_df["wavelength"], test_df["transmittance_scaled"])
+axes[0,1].invert_xaxis()
+axes[0,1].set_title("Test (scaled)")
+
+# (3) Hexane (scaled)
+axes[0,2].plot(hexane_df["wavelength"], hexane_df["transmittance_scaled"])
+axes[0,2].invert_xaxis()
+axes[0,2].set_title("Hexane (scaled)")
+
+# (4) 2-Hexanol (scaled)
+axes[1,0].plot(two_hex_df["wavelength"], two_hex_df["transmittance_scaled"])
+axes[1,0].invert_xaxis()
+axes[1,0].set_title("2‑Hexanol (scaled)")
+
+# (5) THF (not scaled)
+axes[1,1].plot(thf_df["wavelength"], thf_df["transmittance"])
+axes[1,1].invert_xaxis()
+axes[1,1].set_title("THF (unscaled)")
+
+# If you want to show the final 'test_interp' or the reconstruction in the 6th subplot:
+axes[1,2].plot(common_wl, Y, label="Test Interp")
+axes[1,2].plot(common_wl, recon_nnls, label="NNLS Recon", linestyle='--')
+axes[1,2].plot(common_wl, recon_corr, label="Pearson Recon", linestyle='-.')
+axes[1,2].invert_xaxis()
+axes[1,2].set_title("Test vs NNLS Recon vs Pearson Recon")
+axes[1,2].legend()
+
+plt.tight_layout()
+plt.savefig("all_spectra_grid.png")
 plt.show()
