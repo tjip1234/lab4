@@ -1,0 +1,20 @@
+default:
+
+Overall RMS Error: 0.3491
+RMS Error in OH region (3200–3600 cm⁻¹): 0.6081
+
+RMS (1st derivative):  0.0085
+RMS (2nd derivative):  0.0010
+
+Raw Data Correlation (entire range): r = 0.7865, p-value = 0.0000e+00
+Smoothed Data Correlation (entire range): r = 0.7873, p-value = 0.0000e+00
+Raw Data Correlation (OH region): r = 0.9802, p-value = 2.6554e-286
+Smoothed Data Correlation (OH region): r = 0.9804, p-value = 3.8892e-287
+Correlation of 1st Derivatives (entire range): r = 0.7102, p-value = 0.0000e+00
+
+scaled:
+
+Test data before scaling: min = 0.642, max = 1.011
+Reference data: min = 0.000, max = 0.913
+Test data after scaling: min = 0.000, max = 0.913
+Pearson correlation coefficient (overlap): r = 0.7865, p-value = 0.0000e+00
